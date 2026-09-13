@@ -1,7 +1,7 @@
 {
   "id": "after-the-rain",
   "title": "After the rain",
-  "kicker": "Field clearance",
+  "kicker": "After the rain",
   "question": "Why is part of Pine Creek muddier and quicker this morning?",
   "intro": {
     "speaker": "Ranger Wren",
@@ -87,9 +87,17 @@
       "role": "irrelevant"
     }
   ],
-  "minObserved": 3,
+  "minObserved": 4,
   "minMeasured": 2,
-  "neededRoles": ["join", "source"],
+  "neededRoles": ["weather", "join", "source"],
+  "pulsePredict": {
+    "prompt": "If last night's rain hit a steep loose slope, where should the creek first turn brown?",
+    "options": [
+      { "id": "station-creek", "label": "Below the station, before any tributary", "ok": false, "hint": "The stretch by the station can stay relatively clear. Walk farther." },
+      { "id": "confluence", "label": "Where a side run meets Pine Creek", "ok": true },
+      { "id": "mirror-pond", "label": "At Mirror Pond overflow", "ok": false, "hint": "The pond sits downstream of the join. Test that on the ground." }
+    ]
+  },
   "explanations": [
     {
       "id": "tributary-slump",
@@ -129,6 +137,6 @@
   },
   "success": "Rain, a loose slope, and a tributary did this together. That's a system, not a single culprit.",
   "wrenAfter": [
-    "You know how to work a problem now. High Country will ask you to work out where you are."
+    "Rain, slope, and a tributary — that's a system. The case isn't closed until you can walk it back to me."
   ]
 }

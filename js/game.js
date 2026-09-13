@@ -41,6 +41,7 @@ import {
   runTrial,
   setFlumeSlope,
   setFlumeWater,
+  setFlumePrediction,
   hasFairComparison,
   flumeRows,
   flumeMeans,
@@ -63,9 +64,25 @@ import {
   canProposeChallenge,
   tryChallengeExplanation,
   tryChallengeFollowUp,
-  presentChallenge,
-  challengeProgress
+  challengeProgress,
+  predictPulse
 } from "./challenge.js";
+import {
+  createPuzzleState,
+  puzzleUse,
+  aarEligible,
+  incompletePuzzles,
+  classifySite,
+  trySystemsTap,
+  currentSystemsPrompt,
+  hitSystemsSite,
+  systemsSiteForWorld,
+  systemsSiteById,
+  concludeSystems,
+  tryConflict,
+  tabletEvidence
+} from "./puzzles.js";
+import { claimsForAttempt, submitAar, resetAarAnswers, selectedIds, toggleEvidence, judgeClaim } from "./aar.js";
 import { createRenderer } from "./render.js";
 import { bindUi } from "./ui.js";
 import { captureSave, applySave, readSave, writeSave, clearSave, emptyTaught, emptyPresentationSave, wipeRequiresConfirm } from "./save.js";
@@ -97,6 +114,9 @@ import {
   createHcState,
   recordMarker,
   measureRoute,
+  estimateScale,
+  recordCache,
+  cacheTarget,
   compareRoutes,
   toggleHcTopo,
   compareTerrain,
@@ -107,6 +127,7 @@ import {
   pickGisSite,
   inspectLayerType,
   compareImagery,
+  predictWashoutSlope,
   recordDepth,
   planChallengeRoute,
   presentChallenge as presentHcChallenge,
@@ -131,14 +152,19 @@ import {
   setOrbitEccentricity,
   measureOrbit,
   predictKepler,
+  advanceKeplerModel,
   recordMoon,
   useMoonGeometry,
   predictMoon,
+  predictMoonNow,
   alignEclipse,
+  predictEclipse,
   explainEclipse,
+  predictTide,
   compareTides,
   classifyPlanets,
   planObservation,
+  visitChallengeSite,
   presentSfChallenge,
   addSfFind,
   identifyFind,
@@ -153,6 +179,24 @@ import {
   tideRows
 } from "./sunfall.js";
 import { worldToLatLon, formatLatLon } from "./geomap.js";
+import { fieldGuidance } from "./guidance.js";
+import { createSummitEngine, createSummitState, createHybridProvider, createHttpAdapter, createLocalComposerAdapter, noteStruggle, noteSuccess, SUMMIT_GREETING, chooseSummitExpression, summitPortraitSrc, resolveSummitRuntime } from "./summit.js";
+import { buildSummitContext } from "./summit-context.js";
+import {
+  isFieldTestMode,
+  createFieldTestSession,
+  recordSummitTurn,
+  recordWorldEvent,
+  markTurn,
+  serializeFieldTest,
+  formatFieldTestMarkdown,
+  worldSnapshot,
+  routeKind,
+  validatorResult,
+  exportFilenames
+} from "./summit-fieldtest.js";
+import { classifyIntentCategory } from "./summit-character.js";
+import { classifyCard, pendingCard } from "./obsint.js";
 import { POSE_MS, normalizeAppearance } from "./character.js";
 import { createTravelState, beginTravel, travelBlocking, travelTitleFor } from "./travel.js";
 
@@ -170,6 +214,10 @@ const FLOW_MAP = [
   { id: "willow-bench", short: "Bench", mapX: 62, mapY: 72 }
 ];
 
+function useSummitProxy(cfg) {
+  return Boolean(resolveSummitRuntime({ hostname: location.hostname, search: location.search, cfg }).endpoint);
+}
+
 export async function boot(root = document) {
   const canvas = root.querySelector("#world");
   const [
@@ -185,6 +233,12 @@ export async function boot(root = document) {
     flumeSpec,
     dataCatalog,
     challengeSpec,
+    puzzleSpec,
+    aarSpec,
+    summitCurriculum,
+    summitConcepts,
+    summitCuriosity,
+    summitProviderCfg,
     hcRegion,
     hcCatalog,
     hcSpec,
@@ -208,6 +262,16 @@ export async function boot(root = document) {
       fetch("./data/investigations/what-makes-water-move.json").then((r) => r.json()),
       fetch("./data/fielddata/catalog.json").then((r) => r.json()),
       fetch("./data/challenges/after-the-rain.json").then((r) => r.json()),
+      fetch("./data/puzzles/cedar-hollow.json").then((r) => r.json()),
+      fetch("./data/aar/cedar-hollow.json").then((r) => r.json()),
+      fetch("./data/summit/cedar-hollow.json").then((r) => r.json()),
+      fetch("./data/summit/concepts.json").then((r) => r.json()),
+      fetch("./data/summit/curiosity.json")
+        .then((r) => r.json())
+        .catch(() => ({})),
+      fetch("./data/summit/provider.json")
+        .then((r) => r.json())
+        .catch(() => ({ endpoint: "", timeoutMs: 3500 })),
       fetch("./data/regions/high-country.json").then((r) => r.json()),
       fetch("./data/discoveries/high-country.json").then((r) => r.json()),
       fetch("./data/investigations/high-country.json").then((r) => r.json()),
@@ -238,6 +302,31 @@ export async function boot(root = document) {
   const flumeState = createFlumeState();
   const dataState = createDataState();
   const challengeState = createChallengeState();
+  const puzzleState = createPuzzleState();
+  const summitState = createSummitState();
+  const summitRuntime = resolveSummitRuntime({
+    hostname: location.hostname,
+    search: location.search,
+    cfg: summitProviderCfg
+  });
+  const summitAdapter = summitRuntime.endpoint
+    ? createHttpAdapter({
+        endpoint: summitRuntime.endpoint,
+        timeoutMs: summitProviderCfg.timeoutMs || 5000,
+        retry429: 0
+      })
+    : createLocalComposerAdapter({ curiosity: summitCuriosity });
+  const summitEngine = createSummitEngine({
+    curriculum: summitCurriculum,
+    concepts: summitConcepts,
+    provider: createHybridProvider({
+      curriculum: summitCurriculum,
+      concepts: summitConcepts,
+      curiosity: summitCuriosity,
+      adapter: summitAdapter,
+      timeoutMs: summitProviderCfg?.timeoutMs || (summitRuntime.endpoint ? 5000 : 3500)
+    })
+  });
   const hcState = createHcState();
   const sfState = createSfState();
   const regionPlayers = { "cedar-hollow": null, "high-country": null, "sunfall-desert": null };
@@ -274,6 +363,16 @@ export async function boot(root = document) {
   let flumeOpen = false;
   let interpretOverlay = false;
   let clearanceOpen = false;
+  let systemsOpen = false;
+  let aarOpen = false;
+  let summitOpen = false;
+  let summitMoreText = "";
+  let summitAskLock = false;
+  const fieldMode = new URLSearchParams(location.search).get("field") === "1";
+  const fieldTestMode = isFieldTestMode(location.search);
+  const fieldTestSession = fieldTestMode ? createFieldTestSession() : null;
+  let aarIndex = 0;
+  let aarConfirmed = [];
   let atlasOpen = false;
   let geoOpen = false;
   let geoKind = null;
@@ -298,7 +397,9 @@ export async function boot(root = document) {
       flumeState,
       dataState,
       challengeState,
-      hcState,
+        puzzleState,
+        summitState,
+        hcState,
       sfState,
       regionPlayers,
       presentation
@@ -358,7 +459,16 @@ export async function boot(root = document) {
   camera.y = player.y - 28;
   syncFromGameplay(
     masteryState,
-    gameplaySnapshot({ discoveryState, missionState, invState, flumeState, dataState, challengeState, flumeSpec })
+    gameplaySnapshot({
+      discoveryState,
+      missionState,
+      invState,
+      flumeState,
+      dataState,
+      challengeState,
+      flumeSpec,
+      obsIntState: invState.obsInt
+    })
   );
   syncToolsFromGameplay(toolState, toolsCatalog, {
     journalOpened: taught.journal,
@@ -375,8 +485,50 @@ export async function boot(root = document) {
       flumeState,
       dataState,
       challengeState,
-      flumeSpec
+      flumeSpec,
+      obsIntState: invState.obsInt,
+      puzzleState
     });
+  }
+
+  function currentPuzzleUse() {
+    return puzzleUse({
+      missionState,
+      invState,
+      flumeState,
+      dataState,
+      challengeState,
+      obsIntState: invState.obsInt,
+      puzzleState,
+      investigation,
+      hasFairComparison: hasFairComparison(flumeState, flumeSpec)
+    });
+  }
+
+  function currentGuide() {
+    return fieldGuidance({
+      regionId: worldState.currentRegion,
+      missionState,
+      discoveryState,
+      invState,
+      flumeState,
+      dataState,
+      challengeState,
+      obsIntState: invState.obsInt,
+      hcState,
+      sfState,
+      puzzleState,
+      systemsPrompt: currentSystemsPrompt(puzzleState, puzzleSpec),
+      hasFairComparison: hasFairComparison(flumeState, flumeSpec)
+    });
+  }
+
+  function refreshGuide() {
+    if (mode !== "play") {
+      ui.setGuide(null, false);
+      return;
+    }
+    ui.setGuide(currentGuide(), true);
   }
 
   function mapToolFlags() {
@@ -410,6 +562,11 @@ export async function boot(root = document) {
       landscapeConcluded: invState.concluded,
       landscapeConclusionText: investigation.completeJournalEntry,
       evidence,
+      puzzleEvidence: tabletEvidence(puzzleSpec, currentPuzzleUse(), {
+        invState,
+        challengeState,
+        puzzleState
+      }),
       sketch: sketchModel(investigation, invState),
       investigation,
       canPropose: canProposeExplanation(investigation, invState),
@@ -425,7 +582,8 @@ export async function boot(root = document) {
       dataCaption: spec ? spec.title : "",
       graphModel: rows.length ? graphModel(dataState, dataCatalog, "cedar-hollow-flow") : null,
       canInterpret: hasFairComparison(flumeState, flumeSpec),
-      showMap: false
+      showMap: false,
+      guide: currentGuide()
     };
   }
 
@@ -474,9 +632,11 @@ export async function boot(root = document) {
         tools,
         mapState: hcState.mapState,
         discoveries: hcCatalog.items.filter((item) => hcState.foundIds.includes(item.id)),
-        heightAtFn: heightAt
+        heightAtFn: heightAt,
+        scaleBarMeters: hcSpec.scaleBarMeters || 200
       },
       mapTools,
+      guide: currentGuide(),
       onMapTool(id) {
         if (id === "topo") {
           toggleHcTopo(hcState);
@@ -531,7 +691,8 @@ export async function boot(root = document) {
         discoveries: sfCatalog.items.filter((item) => sfState.foundIds.includes(item.id)),
         heightAtFn: heightAt
       },
-      mapTools: [{ id: "trails", label: "Tracks", on: true }]
+      mapTools: [{ id: "trails", label: "Tracks", on: true }],
+      guide: currentGuide()
     };
   }
 
@@ -568,8 +729,42 @@ export async function boot(root = document) {
     }
   }
 
+  function fieldSnap() {
+    return worldSnapshot(buildSummitContext({ ...summitContextInput(), summitState }));
+  }
+
+  function fieldObserve(kind) {
+    if (!fieldTestMode || !fieldTestSession) return;
+    recordWorldEvent(fieldTestSession, {
+      kind,
+      snapshot: fieldSnap(),
+      atMs: Date.now() - fieldTestSession.startedAt
+    });
+  }
+
+  function fieldTestPayload() {
+    if (!fieldTestSession) return null;
+    fieldTestSession.endedAt = Date.now();
+    return serializeFieldTest(fieldTestSession);
+  }
+
+  function downloadFieldTest(kind) {
+    const packed = fieldTestPayload();
+    if (!packed) return null;
+    const names = exportFilenames(packed.session);
+    const body = kind === "md" ? formatFieldTestMarkdown(packed.session, packed.summary) : JSON.stringify(packed, null, 2);
+    const blob = new Blob([body], { type: kind === "md" ? "text/markdown;charset=utf-8" : "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = kind === "md" ? names.md : names.json;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    return packed;
+  }
+
   function persist() {
     syncProgress();
+    refreshGuide();
     writeSave(
       storage,
       captureSave({
@@ -584,6 +779,8 @@ export async function boot(root = document) {
         flumeState,
         dataState,
         challengeState,
+        puzzleState,
+        summitState,
         hcState,
         sfState,
         regionPlayers,
@@ -602,6 +799,9 @@ export async function boot(root = document) {
         flumeOpen ||
         interpretOverlay ||
         clearanceOpen ||
+        systemsOpen ||
+        aarOpen ||
+        summitOpen ||
         geoOpen ||
         travelBlocking(travelState)
     );
@@ -650,7 +850,9 @@ export async function boot(root = document) {
         waterLabel: waterById(flumeSpec, trial.water).label
       })),
       status: flumeState.lastHint,
-      canReadNumbers: hasFairComparison(flumeState, flumeSpec)
+      canReadNumbers: hasFairComparison(flumeState, flumeSpec),
+      prediction: flumeState.prediction,
+      predictOptions: flumeSpec.slopes.map((item) => ({ id: item.id, label: `Predict: ${item.label}` }))
     };
   }
 
@@ -662,6 +864,10 @@ export async function boot(root = document) {
       },
       onWater(id) {
         setFlumeWater(flumeState, id);
+        renderFlume();
+      },
+      onPredict(id) {
+        setFlumePrediction(flumeState, id);
         renderFlume();
       }
     });
@@ -683,11 +889,23 @@ export async function boot(root = document) {
 
   function releaseWater() {
     const result = runTrial(flumeState, flumeSpec);
+    if (result.needPredict) {
+      ui.showToast("Predict first", result.hint);
+      renderFlume();
+      return result;
+    }
     flumeRunUntil = performance.now() + 1400;
     syncFlowDataset();
     persist();
     renderFlume();
-    if (!result.fair) ui.showToast("Fair test", result.hint);
+    fieldObserve("trial");
+    if (!result.fair) {
+      ui.showToast("Fair test", result.hint);
+      maybeSummitIdea("unfair-test");
+    } else if (hasFairComparison(flumeState, flumeSpec)) {
+      noteSuccess(summitState, "CH-03");
+      fieldObserve("fair-comparison");
+    }
     return result;
   }
 
@@ -770,21 +988,30 @@ export async function boot(root = document) {
     renderInterpret();
     refreshJournal();
     if (result.ok) {
+      noteSuccess(summitState, "CH-04");
+      fieldObserve("interpreted");
       closeInterpret();
       showDialogueLines("Ranger Wren", flumeSpec.wren.afterFair, 0, () => {
         dialogue = null;
         ui.showDialogue(false);
       });
+    } else {
+      maybeSummitIdea("pattern");
     }
   }
 
   function clearanceView() {
     const pick = challengeSpec.explanations.find((item) => item.id === challengeState.selectedExplanation);
+    const needsPulse = Boolean(challengeSpec.pulsePredict && !challengeState.pulsePredict);
     const needsFollowUp = Boolean(pick?.correct && !challengeState.followUpDone && !challengeState.concluded);
     return {
       progress: challengeProgress(challengeState, challengeSpec),
       explanations: challengeSpec.explanations,
       selectedExplanation: challengeState.selectedExplanation,
+      needsPulse,
+      pulsePrompt: challengeSpec.pulsePredict?.prompt,
+      pulseOptions: challengeSpec.pulsePredict?.options || [],
+      pulseId: challengeState.pulsePredict,
       needsFollowUp,
       followOptions: challengeSpec.followUp.options,
       followId: null,
@@ -794,6 +1021,7 @@ export async function boot(root = document) {
   }
 
   let clearanceFollowId = null;
+  let clearancePulseId = null;
 
   function renderClearance() {
     const view = clearanceView();
@@ -805,6 +1033,11 @@ export async function boot(root = document) {
       },
       onFollow(id) {
         clearanceFollowId = id;
+        renderClearance();
+      },
+      onPulse(id) {
+        clearancePulseId = id;
+        challengeState.pulsePredict = id;
         renderClearance();
       }
     });
@@ -823,6 +1056,16 @@ export async function boot(root = document) {
   }
 
   function tryClearance() {
+    if (challengeSpec.pulsePredict && !challengeState.pulsePredict) {
+      const result = predictPulse(challengeState, challengeSpec, clearancePulseId);
+      persist();
+      renderClearance();
+      if (result.ok) {
+        closeClearance();
+        ui.showToast("Predicted", result.hint);
+      }
+      return;
+    }
     const result = tryChallengeExplanation(challengeState, challengeSpec, challengeState.selectedExplanation);
     persist();
     renderClearance();
@@ -838,17 +1081,468 @@ export async function boot(root = document) {
   }
 
   function afterClearanceSuccess() {
+    noteSuccess(summitState, "CH-05");
     closeClearance();
     persist();
     showDialogueLines("Ranger Wren", challengeSpec.wrenAfter, 0, () => {
       dialogue = null;
       ui.showDialogue(false);
-      openAtlas("high-country");
+      if (!puzzleState.systems.concluded) {
+        puzzleState.systems.active = true;
+        openSystems();
+      }
     });
+  }
+
+  function systemsView() {
+    const prompt = currentSystemsPrompt(puzzleState, puzzleSpec);
+    return {
+      spec: puzzleSpec,
+      state: puzzleState,
+      lead: puzzleSpec.systems.lead,
+      prompt: prompt.prompt,
+      ready: prompt.kind === "ready" || prompt.kind === "done",
+      concluded: puzzleState.systems.concluded,
+      status: puzzleState.systems.concluded
+        ? "That's one event with parts."
+        : prompt.kind === "ready"
+          ? "That's one event with parts. Check it against the land."
+          : ""
+    };
+  }
+
+  function renderSystems() {
+    ui.showSystems(true, systemsView(), {
+      onTap(x, y, w, h) {
+        const site = hitSystemsSite(puzzleSpec, w, h, x, y);
+        if (!site) return;
+        applySystemsTap(site.id);
+      }
+    });
+  }
+
+  function applySystemsTap(siteId) {
+    puzzleState.systems.active = true;
+    const judged = trySystemsTap(puzzleState, puzzleSpec, siteId);
+    persist();
+    if (systemsOpen) renderSystems();
+    refreshGuide();
+    if (!judged.ok) {
+      ui.showToast("The land disagrees", judged.hint);
+      maybeSummitIdea("systems");
+      return judged;
+    }
+    const site = systemsSiteById(puzzleSpec, siteId);
+    ui.showToast("On the map", site?.label || "Noted");
+    return judged;
+  }
+
+  function maybeSystemsTap(worldId) {
+    if (puzzleState.systems.concluded) return false;
+    if (!puzzleState.systems.active && !challengeState.concluded) return false;
+    const site = systemsSiteForWorld(puzzleSpec, worldId);
+    if (!site) return false;
+    applySystemsTap(site.id);
+    return true;
+  }
+
+  function openSystems() {
+    puzzleState.systems.active = true;
+    systemsOpen = true;
+    renderSystems();
+  }
+
+  function closeSystems() {
+    systemsOpen = false;
+    ui.showSystems(false, {});
+  }
+
+  function walkSystemsSite() {
+    const prompt = currentSystemsPrompt(puzzleState, puzzleSpec);
+    const site =
+      prompt.kind === "predict"
+        ? systemsSiteById(puzzleSpec, puzzleSpec.systems.predict.ok)
+        : (puzzleSpec.systems.sites || []).find((item) => item.role === prompt.role?.id);
+    const point = worldPointForSite(site);
+    closeSystems();
+    if (point) {
+      player.x = point.x;
+      player.y = point.y;
+      destination = null;
+    }
+    ui.showToast("Walk it", prompt.where || "Inspect the land that matches the question.");
+  }
+
+  function worldPointForSite(site) {
+    if (!site) return null;
+    for (const id of site.worldIds || []) {
+      const feat = region.features.find((item) => item.id === id);
+      if (feat) return feat;
+      const prop = (region.props || []).find((item) => item.kind === id);
+      if (prop) return prop;
+      const disc = catalog.items.find((item) => item.id === id);
+      if (disc) return disc;
+      const ch = (challengeSpec.sites || []).find((item) => item.id === id);
+      if (ch) return ch;
+    }
+    return null;
+  }
+
+  function trySystemsMap() {
+    const result = concludeSystems(puzzleState, puzzleSpec);
+    persist();
+    renderSystems();
+    if (!result.ok) {
+      ui.showToast("Keep mapping", result.hint);
+      maybeSummitIdea("systems");
+      return;
+    }
+    noteSuccess(summitState, "CH-07");
+    closeSystems();
+    showDialogueLines("Ranger Wren", ["Source, slope, path, store — and the willows took a hit. That's one event with parts."], 0, () => {
+      dialogue = null;
+      ui.showDialogue(false);
+      const use = currentPuzzleUse();
+      if (!use["CH-08"]) openConflict();
+      else if (aarEligible(puzzleSpec, use)) openAar();
+    });
+  }
+
+  function openConflict() {
+    puzzleState.conflict.seen = true;
+    persist();
+    ui.showDialogue(true, "Ranger Wren", puzzleSpec.conflict.lead + " " + puzzleSpec.conflict.prompt, puzzleSpec.conflict.options.map((option) => ({
+      label: option.label,
+      onClick: () => {
+        const judged = tryConflict(puzzleState, puzzleSpec, option.id);
+        persist();
+        if (!judged.ok) {
+          maybeSummitIdea("revision");
+          ui.showDialogue(true, "Ranger Wren", judged.hint, [
+            {
+              label: "Revise the story",
+              onClick: () => {
+                dialogue = null;
+                ui.showDialogue(false);
+                openConflict();
+              }
+            }
+          ]);
+          return;
+        }
+        noteSuccess(summitState, "CH-08");
+        dialogue = null;
+        ui.showDialogue(false);
+        showDialogueLines("Ranger Wren", ["That's revision. You dropped the false cause because the land disagreed."], 0, () => {
+          dialogue = null;
+          ui.showDialogue(false);
+          const use = currentPuzzleUse();
+          if (aarEligible(puzzleSpec, use)) openAar();
+        });
+      }
+    })), wrenKicker());
+  }
+
+  function aarItems() {
+    return claimsForAttempt(aarSpec, (puzzleState.aar.attempts || 0) + 1);
+  }
+
+  function aarView() {
+    const items = aarItems();
+    const item = items[aarIndex] || items[0];
+    const done = items.length > 0 && items.every((claim) => aarConfirmed.includes(claim.id));
+    if (puzzleState.aar.result) {
+      return {
+        title: puzzleState.aar.result === "clearance" ? aarSpec.clearance.title : aarSpec.moreEvidence.title,
+        lead: puzzleState.aar.result === "clearance" ? aarSpec.clearance.lines[0] : puzzleState.aar.remediation.join(" "),
+        stem: "",
+        evidence: [],
+        selected: [],
+        result: puzzleState.aar.result,
+        status: puzzleState.aar.result === "clearance" ? "The road to High Country is open." : aarSpec.moreEvidence.lead,
+        done: true
+      };
+    }
+    const use = currentPuzzleUse();
+    const evidence = tabletEvidence(puzzleSpec, use, {
+      missionState,
+      invState,
+      flumeState,
+      dataState,
+      challengeState,
+      puzzleState
+    });
+    return {
+      title: aarSpec.title,
+      lead: aarIndex === 0 ? aarSpec.open : "Pin what actually supports this — drop what doesn't.",
+      stem: item?.wren || item?.stem || "",
+      evidence,
+      selected: item ? selectedIds(puzzleState.aar.answers, item.id) : [],
+      done,
+      result: null,
+      status: evidence.length
+        ? ""
+        : "Your tablet is still thin. Walk the hollow first, then pin notes you actually recorded."
+    };
+  }
+
+  function renderAar(status) {
+    const view = aarView();
+    if (status) view.status = status;
+    ui.showAar(true, view, {
+      onToggle(id) {
+        const items = aarItems();
+        const item = items[aarIndex];
+        if (!item) return;
+        const next = toggleEvidence(selectedIds(puzzleState.aar.answers, item.id), id);
+        puzzleState.aar.answers = { ...puzzleState.aar.answers, [item.id]: next };
+        if (aarConfirmed.includes(item.id) && !judgeClaim(item, next).good) {
+          aarConfirmed = aarConfirmed.filter((claimId) => claimId !== item.id);
+        }
+        persist();
+        renderAar();
+      }
+    });
+  }
+
+  function openAar() {
+    aarOpen = true;
+    aarConfirmed = [];
+    if (puzzleState.aar.result === "more-evidence") resetAarAnswers(puzzleState);
+    if (puzzleState.aar.result !== "clearance") aarIndex = 0;
+    renderAar();
+  }
+
+  function closeAar() {
+    aarOpen = false;
+    ui.showAar(false, {});
+  }
+
+  function summitContextInput() {
+    return {
+      regionId: worldState.currentRegion,
+      player,
+      region: isHighCountry() || isSunfall() ? { features: [] } : region,
+      catalog: isHighCountry() || isSunfall() ? { items: [] } : catalog,
+      missionState,
+      discoveryState,
+      invState,
+      flumeState,
+      dataState,
+      challengeState,
+      puzzleState,
+      puzzleSpec,
+      aarSpec,
+      flumeSpec,
+      investigation,
+      aarOpen,
+      aarIndex,
+      summitState,
+      systemsPrompt: currentSystemsPrompt(puzzleState, puzzleSpec)
+    };
+  }
+
+  function renderSummit(extra = {}) {
+    const debug = fieldMode ? summitState.lastDebug : null;
+    const last = summitState.lastDebug || {};
+    const lastTurn = fieldTestSession?.events?.filter((row) => row.type === "summit").slice(-1)[0] || null;
+    const expression = chooseSummitExpression({
+      pending: Boolean(extra.pending),
+      intent: last.intent || summitState.lastIntent || "",
+      routeReason: last.route || "",
+      misconceptionId: last.misconceptionId || ""
+    });
+    ui.showSummit(true, {
+      lead: extra.pending ? "Looking at the notes you actually have…" : "Curious about the hollow. Serious about the science.",
+      messages: summitState.recent,
+      moreAvailable: Boolean(summitMoreText),
+      pending: Boolean(extra.pending),
+      expression,
+      portraitSrc: summitPortraitSrc(expression),
+      fieldTest: fieldTestMode,
+      fieldTestTurnId: lastTurn?.id || "",
+      diag: debug
+        ? [
+            fieldTestMode ? "SUMMIT FIELD TEST" : "FIELD",
+            debug.adapterId ? `${debug.provider}/${debug.adapterId}` : debug.provider,
+            debug.useAi ? "ai-path" : "authored",
+            debug.intent || "intent",
+            `L${debug.supportLevel}`,
+            debug.route || "route",
+            debug.validation || "validation",
+            debug.fallbackReason ? `fallback ${debug.fallbackReason}` : "",
+            debug.packetKeys?.length ? `ctx ${debug.packetKeys.slice(0, 8).join(",")}` : ""
+          ]
+            .filter(Boolean)
+            .join(" · ")
+        : fieldTestMode
+          ? "SUMMIT FIELD TEST · local anonymous log · Summit is the language layer only"
+          : ""
+    });
+    ui.setSummitIdea(Boolean(summitState.idea));
+  }
+
+  function openSummit() {
+    summitOpen = true;
+    summitState.idea = false;
+    ui.setSummitIdea(false);
+    if (!summitState.recent.length) {
+      summitState.recent = [
+        { role: "summit", kind: "greet", intent: "character", text: SUMMIT_GREETING }
+      ];
+      persist();
+    }
+    renderSummit();
+  }
+
+  function closeSummit() {
+    summitOpen = false;
+    ui.showSummit(false, {});
+  }
+
+  async function askSummit(opts) {
+    if (worldState.currentRegion !== "cedar-hollow") {
+      summitState.recent = [
+        ...(summitState.recent || []),
+        {
+          role: "summit",
+          kind: "orient",
+          intent: "what_now",
+          text: "This version of Summit tutors Cedar Hollow. Wren still runs the field work in other regions."
+        }
+      ].slice(-8);
+      persist();
+      renderSummit();
+      return;
+    }
+    if (summitAskLock) return;
+    summitAskLock = true;
+    if (summitOpen) renderSummit({ pending: true });
+    const t0 = typeof performance !== "undefined" ? performance.now() : Date.now();
+    try {
+      const reply = await Promise.resolve(summitEngine.ask(summitState, summitContextInput(), opts));
+      summitMoreText = reply.more || "";
+      if (fieldTestSession) {
+        const snap = fieldSnap();
+        const usage = reply.rawModel?.usage || {};
+        recordSummitTurn(fieldTestSession, {
+          studentUtterance: opts.question || opts.action || "",
+          action: opts.action || "",
+          region: snap.region,
+          puzzle: snap.puzzleId,
+          puzzleStage: snap.stage,
+          locationCategory: (snap.near || []).join(", "),
+          routeKind: routeKind(reply),
+          routeReason: reply.route?.reason || "",
+          concept: (reply.conceptIds || [])[0] || "",
+          supportLevel: reply.level,
+          modelLatencyMs: usage.latencyMs,
+          fullLoopMs: Math.round((typeof performance !== "undefined" ? performance.now() : Date.now()) - t0),
+          validatorResult: validatorResult(reply),
+          fallbackOccurred: Boolean(reply.fallbackReason),
+          fallbackReason: reply.fallbackReason || "",
+          visibleResponse: reply.text,
+          nextActionText: reply.packet?.nextAction?.text || "",
+          comparisonReady: snap.comparisonReady,
+          steepMeasured: snap.steepMeasured,
+          gentleMeasured: snap.gentleMeasured,
+          misconceptionId: reply.misconceptionId || "",
+          intentCategory: classifyIntentCategory({
+            question: opts.question || "",
+            action: opts.action || "",
+            routeReason: reply.route?.reason || "",
+            intent: reply.intent || ""
+          }),
+          snapshot: snap,
+          atMs: Date.now() - fieldTestSession.startedAt
+        });
+      }
+      persist();
+      return reply;
+    } finally {
+      summitAskLock = false;
+      if (summitOpen) renderSummit();
+    }
+  }
+
+  function maybeSummitIdea(kind) {
+    noteStruggle(summitState, summitContextInput().activePuzzleId || "CH-02", kind || "fail");
+    ui.setSummitIdea(Boolean(summitState.idea));
+    if (summitState.idea && !summitState.ideaSeen) {
+      summitState.ideaSeen = true;
+      ui.showToast("Summit has an idea", "Ask when you want a hand reading the hollow.");
+    }
+    persist();
+  }
+
+  function aarAdvance() {
+    const items = aarItems();
+    const item = items[aarIndex];
+    if (!item) return;
+    const selected = selectedIds(puzzleState.aar.answers, item.id);
+    if (!selected.length) {
+      ui.showToast("Show me the notes", "Pin the Field Tablet evidence that actually supports this.");
+      return;
+    }
+    const judged = judgeClaim(item, selected);
+    puzzleState.aar.lastJudge = {
+      kind: judged.kind,
+      hint: judged.hint,
+      good: judged.good,
+      claimId: item.id,
+      pinned: selected
+    };
+    persist();
+    if (!judged.good) {
+      maybeSummitIdea(judged.kind);
+      renderAar(judged.hint);
+      return;
+    }
+    const already = aarConfirmed.includes(item.id);
+    if (!already) aarConfirmed.push(item.id);
+    if (!already) {
+      renderAar(judged.hint);
+      return;
+    }
+    if (aarIndex < items.length - 1) {
+      aarIndex += 1;
+      renderAar();
+      return;
+    }
+    renderAar("If the whole case still stands, show me.");
+  }
+
+  function submitAarCase() {
+    const use = currentPuzzleUse();
+    const missing = incompletePuzzles(puzzleSpec, use);
+    const result = submitAar(puzzleState, aarSpec, puzzleSpec, puzzleState.aar.answers, missing);
+    persist();
+    refreshJournal();
+    closeAar();
+    fieldObserve(result.result === "clearance" ? "clearance" : "aar");
+    if (result.result === "clearance") {
+      noteSuccess(summitState, "CH-09");
+      showDialogueLines("Ranger Wren", aarSpec.clearance.lines, 0, () => {
+        dialogue = null;
+        ui.showDialogue(false);
+        openAtlas("high-country");
+      });
+      return result;
+    }
+    showDialogueLines("Ranger Wren", result.lines.length ? result.lines : [aarSpec.moreEvidence.lead], 0, () => {
+      dialogue = null;
+      ui.showDialogue(false);
+    });
+    return result;
   }
 
   function inspectChallenge(site) {
     if (!site || inspectLock) return;
+    if (challengeSpec.pulsePredict && !challengeState.pulsePredict) {
+      openClearance();
+      ui.showToast("Predict first", "Where should the brown pulse first show?");
+      return;
+    }
     inspectLock = true;
     const observed = observeSite(challengeState, challengeSpec, site.id);
     const lines = [site.observe];
@@ -864,15 +1558,32 @@ export async function boot(root = document) {
       persist();
       refreshJournal();
       if (!observed.already) ui.showToast("Noted", site.name);
+      maybeSystemsTap(site.id);
     }, site.useful === false ? "Look closer" : "Field note");
   }
 
   function renderAtlas() {
     const canvasEl = root.querySelector("#atlas-map");
     if (!canvasEl) return;
+    sizeAtlasCanvas();
     const ctx = canvasEl.getContext("2d");
     drawWorldMap(ctx, tbWorld, worldState, worldState.selectedRegionId);
     ui.setAtlasPreview(previewModel(tbWorld, worldState, worldState.selectedRegionId));
+  }
+
+  function sizeAtlasCanvas() {
+    const canvasEl = root.querySelector("#atlas-map");
+    const atlasEl = root.querySelector("#atlas");
+    if (!canvasEl || atlasEl?.hidden) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const cssW = Math.max(1, canvasEl.clientWidth);
+    const cssH = Math.max(1, canvasEl.clientHeight);
+    const w = Math.max(1, Math.floor(cssW * dpr));
+    const h = Math.max(1, Math.floor(cssH * dpr));
+    if (canvasEl.width !== w || canvasEl.height !== h) {
+      canvasEl.width = w;
+      canvasEl.height = h;
+    }
   }
 
   function openAtlas(regionId) {
@@ -884,7 +1595,7 @@ export async function boot(root = document) {
     persist();
     refreshJournal();
     ui.showAtlas(true);
-    renderAtlas();
+    requestAnimationFrame(() => renderAtlas());
   }
 
   function closeAtlas() {
@@ -894,6 +1605,7 @@ export async function boot(root = document) {
 
   function refreshJournal() {
     ui.setJournal(journalView());
+    refreshGuide();
   }
 
   function pulseFocus(x, y, ms = 720) {
@@ -920,6 +1632,7 @@ export async function boot(root = document) {
     canvas.width = Math.floor(canvas.clientWidth * dpr);
     canvas.height = Math.floor(canvas.clientHeight * dpr);
     camera.scale = canvas.height / VIEW_HEIGHT;
+    if (atlasOpen) renderAtlas();
   }
 
   function screenToWorld(clientX, clientY) {
@@ -968,9 +1681,47 @@ export async function boot(root = document) {
     if (!feature || inspectLock) return;
     const result = addObservation(missionState, mission, feature.id);
     if (!result) return;
+    fieldObserve("inspect");
     inspectLock = true;
     const spec = result.spec;
     showDialogueLines("Field note", [spec.prompt, spec.text], 0, () => {
+      const inquiry = puzzleSpec.siteInquiries?.[feature.id];
+      const read = puzzleState.siteReads[feature.id];
+      if (inquiry && !read?.ok) {
+        ui.showDialogue(
+          true,
+          "Field note",
+          inquiry.prompt,
+          inquiry.options.map((option) => ({
+            label: option.label,
+            onClick: () => {
+              const judged = classifySite(puzzleState, puzzleSpec, feature.id, option.id);
+              dialogue = null;
+              inspectLock = false;
+              if (judged.ok) {
+                ui.showDialogue(false);
+                ui.showToast("Noted", spec.title);
+                persist();
+                refreshJournal();
+                maybeSystemsTap(feature.id);
+              } else {
+                ui.showDialogue(true, "Field note", judged.hint, [
+                  {
+                    label: "Look again",
+                    onClick: () => {
+                      dialogue = null;
+                      ui.showDialogue(false);
+                    }
+                  }
+                ]);
+                persist();
+              }
+            }
+          })),
+          ""
+        );
+        return;
+      }
       dialogue = null;
       ui.showDialogue(false);
       inspectLock = false;
@@ -980,6 +1731,7 @@ export async function boot(root = document) {
         persist();
         refreshJournal();
       }
+      maybeSystemsTap(feature.id);
     });
   }
 
@@ -989,6 +1741,7 @@ export async function boot(root = document) {
 
     if (!isFound(discoveryState, item.id)) {
       const result = addDiscovery(discoveryState, catalog, item.id);
+      fieldObserve("discovery");
       const name = displayName(item, false);
       player.pose = "inspect";
       pulseFocus(item.x, item.y);
@@ -1004,6 +1757,9 @@ export async function boot(root = document) {
           ui.showToast("Noted", name);
           persist();
           refreshJournal();
+          maybeSystemsTap(item.id);
+          const sortCard = pendingCard(investigation.obsInt, invState.obsInt, discoveryState.foundIds);
+          if (sortCard && sortCard.discoveryId === item.id) openGeo("obsint");
         }
       }, "Look closer");
       return;
@@ -1039,10 +1795,18 @@ export async function boot(root = document) {
       return;
     }
 
+    const sortCard = pendingCard(investigation.obsInt, invState.obsInt, discoveryState.foundIds);
+    if (sortCard && sortCard.discoveryId === item.id) {
+      inspectLock = false;
+      openGeo("obsint");
+      return;
+    }
+
     showDialogueLines(name, [text], 0, () => {
       dialogue = null;
       ui.showDialogue(false);
       inspectLock = false;
+      maybeSystemsTap(item.id);
     });
   }
 
@@ -1064,6 +1828,7 @@ export async function boot(root = document) {
         persist();
         refreshJournal();
       }
+      maybeSystemsTap(prop.kind);
     });
   }
 
@@ -1210,17 +1975,23 @@ export async function boot(root = document) {
   function renderSfGeo() {
     const sky = liveSky(sfState, sfRegion, player);
     const view = sfBoardView(geoKind, sfState, sfSpec, sky);
+    if (geoKind === "challenge") {
+      const good = sfSpec.challenge.sites.find((site) => site.ok);
+      if (good) {
+        view.lead = `Walk to ${formatLatLon(worldToLatLon(sfRegion, good.x, good.y), 4)}. Match the live reading. Pair labels are not the answer.`;
+      }
+    }
     ui.showGeoBoard(true, view, {
       onPick(group, id) {
         if (geoKind === "shadow" && group === "explain") sfState.rotationExplain = id;
         if (geoKind === "seasons" && group === "explain") sfState.seasonExplain = id;
         if (geoKind === "orbit" && group === "ecc") setOrbitEccentricity(sfState, Number(id));
-        if (geoKind === "kepler" && group === "period") sfState.kepler.predictedP = Number(id);
-        if (geoKind === "moon" && group === "predict") sfState.moonPredict = id;
+        if (geoKind === "moon" && group === "now") sfState.pendingMoon = id;
         if (geoKind === "eclipse" && group === "tilt") alignEclipse(sfState, id !== "off");
-        if (geoKind === "eclipse" && group === "explain") sfState.lastHint = "";
-        if (geoKind === "eclipse") sfState._eclipseChoice = group === "explain" ? id : sfState._eclipseChoice;
+        if (geoKind === "eclipse" && group === "will") sfState._eclipseWill = id;
+        if (geoKind === "eclipse" && group === "explain") sfState._eclipseChoice = id;
         if (geoKind === "tides" && group === "pattern") sfState.tides.pattern = id;
+        if (geoKind === "tides" && group === "predict") predictTide(sfState, id);
         if (geoKind === "planets" && group === "pattern") sfState.planets.pattern = id;
         if (geoKind === "challenge") {
           if (group === "reason") {
@@ -1234,19 +2005,25 @@ export async function boot(root = document) {
         }
         renderGeo();
       },
+      onNumber(_id, value) {
+        if (geoKind === "kepler") sfState.kepler.predictedP = Number(value);
+      },
       onTry() {
         let result = { ok: false };
         if (geoKind === "shadow") result = explainRotation(sfState, sfState.rotationExplain);
         else if (geoKind === "seasons") result = explainSeasons(sfState, sfState.seasonExplain);
         else if (geoKind === "orbit") result = measureOrbit(sfState);
-        else if (geoKind === "kepler") result = predictKepler(sfState, sfState.kepler.predictedP);
-        else if (geoKind === "moon") {
-          useMoonGeometry(sfState);
-          takeEvidence({ evidence: [{ competencyId: "moon", kind: "moon-geometry" }] });
-          result = predictMoon(sfState, sfState.moonPredict);
-        } else if (geoKind === "eclipse") result = explainEclipse(sfState, sfState._eclipseChoice);
-        else if (geoKind === "tides") result = compareTides(sfState, sfState.tides.pattern);
-        else if (geoKind === "planets") result = classifyPlanets(sfState, sfState.planets.pattern);
+        else if (geoKind === "kepler") {
+          if (sfState.kepler.ok && !sfState.kepler.modelChecked) result = advanceKeplerModel(sfState);
+          else result = predictKepler(sfState, sfState.kepler.predictedP);
+        } else if (geoKind === "moon") {
+          result = predictMoonNow(sfState, sfState.pendingMoon);
+        } else if (geoKind === "eclipse") {
+          if (sfState._eclipseWill) predictEclipse(sfState, sfState._eclipseWill === "yes");
+          result = explainEclipse(sfState, sfState._eclipseChoice);
+        } else if (geoKind === "tides") {
+          result = compareTides(sfState, sfState.tides.pattern);
+        } else if (geoKind === "planets") result = classifyPlanets(sfState, sfState.planets.pattern);
         else if (geoKind === "challenge") {
           result = planObservation(sfState, sfSpec, sfState.challenge);
           if (result.ok) presentSfChallenge(sfState);
@@ -1254,6 +2031,7 @@ export async function boot(root = document) {
         takeEvidence(result);
         renderGeo();
         if (result.ok) ui.showToast("Noted", result.hint || view.title);
+        else if (result.hint) ui.showToast("Check the model", result.hint);
       }
     });
   }
@@ -1262,6 +2040,168 @@ export async function boot(root = document) {
     if (!geoOpen) return;
     if (isSunfall()) {
       renderSfGeo();
+      return;
+    }
+    if (geoKind === "obsint") {
+      const card = pendingCard(investigation.obsInt, invState.obsInt, discoveryState.foundIds);
+      ui.showGeoBoard(
+        true,
+        {
+          title: "What can you see?",
+          lead: "Pick the sentence that stays with the rock in front of you.",
+          status: invState.lastHint || "",
+          ok: false,
+          tryLabel: "Sort this pair",
+          obsInt: card
+            ? {
+                prompt: card.prompt,
+                observation: card.observation,
+                interpretation: card.interpretation,
+                selected: invState._obsChoice || null
+              }
+            : null,
+          hideTry: !card
+        },
+        {
+          onPick(_group, id) {
+            invState._obsChoice = id;
+            renderGeo();
+          },
+          onTry() {
+            if (!card) {
+              closeGeo();
+              return;
+            }
+            const result = classifyCard(invState.obsInt, investigation.obsInt, card.id, invState._obsChoice);
+            invState.lastHint = result.hint;
+            persist();
+            renderGeo();
+            if (result.ok) {
+              ui.showToast("Observation", result.hint);
+              closeGeo();
+            } else ui.showToast("Look again", result.hint);
+          }
+        }
+      );
+      return;
+    }
+    if (geoKind === "scale") {
+      const trails = [hcSpec.routes.a, hcSpec.routes.b];
+      ui.showGeoBoard(
+        true,
+        {
+          title: "How far on the land?",
+          lead: `The bar on the sketch is ${hcSpec.scaleBarMeters || 200} m. Count bars along a trail, then check the walk.`,
+          status: hcState.lastHint,
+          ok: (hcState.scaleEstimates || []).filter((row) => row.ok).length >= 2,
+          numberInput: { id: "meters", label: "Your estimate (m)", value: hcState._scaleGuess || "" },
+          groups: [
+            {
+              id: "trail",
+              label: "Trail",
+              selected: hcState._scaleTrail,
+              items: trails.map((trail) => ({ id: trail.id, label: trail.label }))
+            }
+          ],
+          tryLabel: "Check against the land"
+        },
+        {
+          onPick(_group, id) {
+            hcState._scaleTrail = id;
+            renderGeo();
+          },
+          onNumber(_id, value) {
+            hcState._scaleGuess = value;
+          },
+          onTry() {
+            const result = estimateScale(
+              hcState,
+              hcSpec,
+              hcRegion,
+              heightAt,
+              hcState._scaleTrail,
+              hcState._scaleGuess
+            );
+            takeEvidence(result);
+            renderGeo();
+            if (!result.ok) ui.showToast("Use the bar", result.hint);
+            else ui.showToast("Scale", result.hint);
+          }
+        }
+      );
+      return;
+    }
+    if (geoKind === "terrain") {
+      const featureId = hcState._terrainFocus;
+      const item = hcSpec.terrainCompares.find((entry) => entry.id === featureId);
+      ui.showGeoBoard(
+        true,
+        {
+          title: "How do the lines sit?",
+          lead: item?.prompt || "Stand on the slope. Then look at topo spacing.",
+          status: hcState.lastHint,
+          ok: hcState.terrainCompares.includes(featureId),
+          groups: [
+            {
+              id: "spacing",
+              label: "On the map",
+              selected: (hcState.terrainChoices || {})[featureId],
+              items: hcSpec.spacingChoices
+            }
+          ]
+        },
+        {
+          onPick(_group, id) {
+            const result = compareTerrain(hcState, hcSpec, featureId, id);
+            takeEvidence(result);
+            renderGeo();
+            if (!result.ok) ui.showToast("Walk the land", result.hint);
+          },
+          onTry() {
+            closeGeo();
+          }
+        }
+      );
+      return;
+    }
+    if (geoKind === "washout") {
+      ui.showGeoBoard(
+        true,
+        {
+          title: "Why did this bank fail?",
+          lead: "Predict which trail sheds water faster after rain. Then look at the scar.",
+          status: hcState.lastHint,
+          ok: hcState.imageryCompared,
+          groups: [
+            {
+              id: "slope",
+              label: "Which slope sheds faster after rain?",
+              selected: hcState.slopePredict,
+              items: [
+                { id: "west", label: "The west switchback" },
+                { id: "east", label: "The east meadow trail" }
+              ]
+            }
+          ],
+          tryLabel: hcState.slopePredict ? "Compare with the ground" : "Lock prediction"
+        },
+        {
+          onPick(_group, id) {
+            predictWashoutSlope(hcState, id);
+            renderGeo();
+          },
+          onTry() {
+            if (!hcState.slopePredict) return;
+            hcState.washoutSeen = true;
+            const wash = hcRegion.props.find((prop) => prop.kind === "washout");
+            const result = compareImagery(hcState, hcSpec, player, wash);
+            takeEvidence(result);
+            renderGeo();
+            if (result.ok) ui.showToast("Washout", result.note || result.hint);
+            else ui.showToast("Not yet", result.hint);
+          }
+        }
+      );
       return;
     }
     if (geoKind === "routes") {
@@ -1512,6 +2452,10 @@ export async function boot(root = document) {
       return;
     }
     if (target.kind === "moon-site") {
+      if (!sfState.moonGeometry || !sfState.pendingMoon) {
+        openGeo("moon");
+        return;
+      }
       inspectLock = true;
       showDialogueLines("Night-sky viewpoint", [sfSpec.moonSite.prompt], 0, () => {
         const result = recordMoon(sfState, sfSpec, sfRegion, player);
@@ -1521,7 +2465,7 @@ export async function boot(root = document) {
         takeEvidence(result);
         if (result.ok) {
           ui.showToast("Sky log", result.row.name);
-          if (sfState.moonLog.length >= 4) openGeo("moon");
+          if (sfState.moonLog.length >= 2) ui.showToast("Sky log", result.row.name);
         } else if (result.hint) ui.showToast("Not yet", result.hint);
       }, "Log the Moon");
       return;
@@ -1540,6 +2484,19 @@ export async function boot(root = document) {
     }
     if (target.kind === "eclipse-desk") {
       openGeo("eclipse");
+      return;
+    }
+    if (target.kind === "sf-site") {
+      const result = visitChallengeSite(sfState, sfSpec, player);
+      inspectLock = true;
+      const live = formatLatLon(worldToLatLon(sfRegion, player.x, player.y), 4);
+      showDialogueLines("Coordinate pair", [`Live reading ${live}.`], 0, () => {
+        inspectLock = false;
+        dialogue = null;
+        ui.showDialogue(false);
+        persist();
+        if (result.ok) ui.showToast("On station", result.site.label);
+      }, "Record this pair");
       return;
     }
     if (target.kind === "compare-sample") {
@@ -1631,6 +2588,20 @@ export async function boot(root = document) {
       talkHcWren();
       return;
     }
+    if (target.kind === "cache") {
+      inspectLock = true;
+      const live = liveReading(hcRegion, player, 4);
+      showDialogueLines("No signboard", [`Live reading ${live}. Match the cache pair.`], 0, () => {
+        const result = recordCache(hcState, hcSpec, hcRegion, player);
+        inspectLock = false;
+        dialogue = null;
+        ui.showDialogue(false);
+        takeEvidence(result);
+        if (result.ok) ui.showToast("Cache", result.reading);
+        else ui.showToast("Keep walking", result.hint);
+      }, "Record if it matches");
+      return;
+    }
     if (target.kind === "marker") {
       inspectLock = true;
       const digits = markerPrecision(player, target.spec);
@@ -1667,26 +2638,12 @@ export async function boot(root = document) {
       return;
     }
     if (target.kind === "terrain") {
-      const result = compareTerrain(hcState, hcSpec, target.id);
-      inspectLock = true;
-      showDialogueLines(target.feature.name, [result.prompt || target.feature.label], 0, () => {
-        inspectLock = false;
-        dialogue = null;
-        ui.showDialogue(false);
-        takeEvidence(result);
-      });
+      hcState._terrainFocus = target.id;
+      openGeo("terrain");
       return;
     }
     if (target.kind === "washout") {
-      hcState.washoutSeen = true;
-      const result = compareImagery(hcState, hcSpec, player, { x: target.x, y: target.y });
-      inspectLock = true;
-      showDialogueLines("Broken switchback", [hcSpec.imagery.note], 0, () => {
-        inspectLock = false;
-        dialogue = null;
-        ui.showDialogue(false);
-        takeEvidence(result);
-      });
+      openGeo("washout");
       return;
     }
     if (target.kind === "depth") {
@@ -1734,17 +2691,26 @@ export async function boot(root = document) {
       });
       return;
     }
-    if (recordedMarkerCount(hcState) >= 2 && hcState.measuredRoutes.length < 2) {
+    if (recordedMarkerCount(hcState) >= 2 && !hcState.cacheFound) {
+      showDialogueLines(
+        "Ranger Wren",
+        [`Spare cache is at ${cacheTarget(hcRegion, hcSpec)}. Walk until your live reading matches. No signboard.`],
+        0,
+        () => {
+          dialogue = null;
+          ui.showDialogue(false);
+        }
+      );
+      return;
+    }
+    if (hcState.cacheFound && (hcState.scaleEstimates || []).filter((row) => row.ok).length < 2) {
       ui.showDialogue(true, "Ranger Wren", hcSpec.wren.afterMarkers[0], [
         {
-          label: "Measure the two trails",
+          label: "Use the scale bar",
           onClick: () => {
-            measureRoute(hcState, hcSpec, hcRegion, heightAt, hcSpec.routes.a.id);
-            const second = measureRoute(hcState, hcSpec, hcRegion, heightAt, hcSpec.routes.b.id);
-            takeEvidence(second);
             dialogue = null;
             ui.showDialogue(false);
-            openGeo("routes");
+            openGeo("scale");
           }
         },
         {
@@ -1755,6 +2721,10 @@ export async function boot(root = document) {
           }
         }
       ]);
+      return;
+    }
+    if ((hcState.scaleEstimates || []).filter((row) => row.ok).length >= 2 && !hcState.routeCompared) {
+      openGeo("routes");
       return;
     }
     if (hcState.routeCompared && hcState.terrainCompares.length < 2) {
@@ -1781,12 +2751,10 @@ export async function boot(root = document) {
       return;
     }
     if (hcState.gisOk && !hcState.imageryCompared) {
-      hcState.mapState.layersOn = [...new Set([...(hcState.mapState.layersOn || []), "imagery"])];
-      const result = compareImagery(hcState, hcSpec, player, hcRegion.props.find((prop) => prop.kind === "washout"));
-      takeEvidence(result);
       showDialogueLines("Ranger Wren", hcSpec.wren.afterGis, 0, () => {
         dialogue = null;
         ui.showDialogue(false);
+        openGeo("washout");
       });
       return;
     }
@@ -1931,7 +2899,7 @@ export async function boot(root = document) {
       });
       return;
     }
-    if (shouldIntroduceInvestigation(invState, discoveryState, done)) {
+    if (challengeState.concluded && !invState.concluded && shouldIntroduceInvestigation(invState, discoveryState, done)) {
       showDialogueLines("Ranger Wren", investigation.intro.lines, 0, () => {
         beginInvestigation(invState, investigation, discoveryState);
         dialogue = null;
@@ -2030,13 +2998,74 @@ export async function boot(root = document) {
       ]);
       return;
     }
-    if (challengeState.concluded && !challengeState.presented) {
-      presentChallenge(challengeState);
-      persist();
-      showDialogueLines("Ranger Wren", challengeSpec.wrenAfter, 0, () => {
+    if (challengeState.concluded && !puzzleState.systems.concluded) {
+      ui.showDialogue(true, "Ranger Wren", "Last night wasn't four separate stories. Map it on the hollow — or walk the places that took part.", [
+        {
+          label: "Map the hollow",
+          onClick: () => {
+            dialogue = null;
+            ui.showDialogue(false);
+            puzzleState.systems.active = true;
+            openSystems();
+          }
+        },
+        {
+          label: "Keep looking",
+          onClick: () => {
+            dialogue = null;
+            ui.showDialogue(false);
+            puzzleState.systems.active = true;
+            persist();
+            refreshGuide();
+          }
+        }
+      ]);
+      return;
+    }
+    if (challengeState.concluded && puzzleState.systems.concluded && !useNow["CH-08"]) {
+      ui.showDialogue(true, "Ranger Wren", "A tidy first story just met a crate note and a clear station reach.", [
+        {
+          label: "Face the conflict",
+          onClick: () => {
+            dialogue = null;
+            ui.showDialogue(false);
+            openConflict();
+          }
+        },
+        {
+          label: "Not yet",
+          onClick: () => {
+            dialogue = null;
+            ui.showDialogue(false);
+          }
+        }
+      ]);
+      return;
+    }
+    if (aarEligible(puzzleSpec, useNow) && puzzleState.aar.result !== "clearance") {
+      ui.showDialogue(true, "Ranger Wren", aarSpec.open, [
+        {
+          label: "Make the case",
+          onClick: () => {
+            dialogue = null;
+            ui.showDialogue(false);
+            openAar();
+          }
+        },
+        {
+          label: "Not yet",
+          onClick: () => {
+            dialogue = null;
+            ui.showDialogue(false);
+          }
+        }
+      ]);
+      return;
+    }
+    if (puzzleState.aar.result === "more-evidence") {
+      showDialogueLines("Ranger Wren", puzzleState.aar.remediation.length ? puzzleState.aar.remediation : [aarSpec.moreEvidence.lead], 0, () => {
         dialogue = null;
         ui.showDialogue(false);
-        openAtlas("high-country");
       });
       return;
     }
@@ -2150,6 +3179,7 @@ export async function boot(root = document) {
     audio.setPlace(worldState.currentRegion, false);
     ui.setHint(controlHintText());
     refreshSkyClock();
+    refreshGuide();
     if (!presentation.openingSeen) {
       presentation.openingSeen = true;
       persist();
@@ -2187,6 +3217,12 @@ export async function boot(root = document) {
     if (!hit) return;
     worldState.selectedRegionId = hit.id;
     renderAtlas();
+  });
+
+  root.querySelector("#inspect-prompt")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    if (mode !== "play" || overlayBlocks()) return;
+    inspectTarget(currentTarget());
   });
 
   window.addEventListener("keydown", (event) => {
@@ -2232,6 +3268,21 @@ export async function boot(root = document) {
     }
     if (clearanceOpen) {
       if (event.key === "Escape") closeClearance();
+      return;
+    }
+    if (systemsOpen) {
+      if (event.key === "Escape") closeSystems();
+      return;
+    }
+    if (summitOpen) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeSummit();
+      }
+      return;
+    }
+    if (aarOpen) {
+      if (event.key === "Escape") closeAar();
       return;
     }
     if (geoOpen) {
@@ -2334,6 +3385,48 @@ export async function boot(root = document) {
   root.querySelector("#clearance-try")?.addEventListener("click", tryClearance);
   root.querySelector("#clearance-follow-try")?.addEventListener("click", tryClearanceFollow);
   root.querySelector("#clearance-close")?.addEventListener("click", closeClearance);
+  root.querySelector("#systems-try")?.addEventListener("click", trySystemsMap);
+  root.querySelector("#systems-walk")?.addEventListener("click", walkSystemsSite);
+  root.querySelector("#systems-close")?.addEventListener("click", closeSystems);
+  root.querySelector("#aar-next")?.addEventListener("click", aarAdvance);
+  root.querySelector("#aar-summit")?.addEventListener("click", openSummit);
+  root.querySelector("#aar-submit")?.addEventListener("click", submitAarCase);
+  root.querySelector("#aar-close")?.addEventListener("click", closeAar);
+  root.querySelector("#summit-toggle")?.addEventListener("click", () => {
+    if (summitOpen) closeSummit();
+    else openSummit();
+  });
+  root.querySelector("#summit-close")?.addEventListener("click", closeSummit);
+  root.querySelector("#summit-more")?.addEventListener("click", () => askSummit({ action: "explain_more", question: "Explain more" }));
+  root.querySelector("#summit-quick")?.addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-summit]");
+    if (!btn) return;
+    askSummit({ action: btn.dataset.summit });
+  });
+  root.querySelector("#summit-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const input = root.querySelector("#summit-ask");
+    const question = input?.value?.trim();
+    if (!question) {
+      askSummit({ action: "what_now" });
+      return;
+    }
+    input.value = "";
+    askSummit({ question });
+  });
+  root.querySelector("#summit-fieldtest")?.addEventListener("click", (event) => {
+    const markBtn = event.target.closest("[data-ft-mark]");
+    if (markBtn && fieldTestSession) {
+      const turns = fieldTestSession.events.filter((row) => row.type === "summit");
+      const last = turns[turns.length - 1];
+      if (!last) return;
+      const note = root.querySelector("#summit-fieldtest-note")?.value || "";
+      markTurn(fieldTestSession, last.id, markBtn.dataset.ftMark, note);
+      ui.showToast("Marked", markBtn.dataset.ftMark.replace("_", " ").toLowerCase());
+    }
+  });
+  root.querySelector("#summit-fieldtest-json")?.addEventListener("click", () => downloadFieldTest("json"));
+  root.querySelector("#summit-fieldtest-md")?.addEventListener("click", () => downloadFieldTest("md"));
   root.querySelector("#geo-close")?.addEventListener("click", closeGeo);
   root.querySelector("#path-reset").addEventListener("click", () => {
     resetPath(missionState);
@@ -2374,6 +3467,7 @@ export async function boot(root = document) {
   ui.setHint("");
   resize();
   window.addEventListener("resize", resize);
+  window.visualViewport?.addEventListener("resize", resize);
 
   function step(now) {
     const dt = Math.min(0.05, (now - last) / 1000);
@@ -2484,12 +3578,16 @@ export async function boot(root = document) {
         );
       } else if (target.kind === "flume") {
         ui.setPrompt("Use the runoff table · E");
+      } else if (target.kind === "cache") {
+        ui.setPrompt("Match the cache pair · E");
       } else if (target.kind === "marker") {
         ui.setPrompt("Record this reading · E");
       } else if (target.kind === "stake") {
         ui.setPrompt("Read the stake · E");
       } else if (target.kind === "challenge") {
         ui.setPrompt("Look closer · E");
+      } else if (target.kind === "sf-site") {
+        ui.setPrompt("Record this coordinate pair · E");
       } else if (target.kind === "gnomon") {
         ui.setPrompt("Record the shadow · E");
       } else if (target.kind === "moon-site") {
@@ -2504,7 +3602,14 @@ export async function boot(root = document) {
         ui.setPrompt("Use the alignment model · E");
       } else if (target.kind === "discovery") {
         const pending = availableMeasurementAt(investigation, invState, discoveryState, target.item.id);
-        ui.setPrompt(pending ? `${pending.actionLabel} · E` : "Look closer · E");
+        const sortCard = pendingCard(investigation.obsInt, invState.obsInt, discoveryState.foundIds);
+        ui.setPrompt(
+          pending
+            ? `${pending.actionLabel} · E`
+            : sortCard && sortCard.discoveryId === target.item.id
+              ? "Sort seen vs guessed · E"
+              : "Look closer · E"
+        );
       } else {
         ui.setPrompt(`Look closer · E`);
       }
@@ -2572,6 +3677,10 @@ export async function boot(root = document) {
       flumeState,
       dataState,
       challengeState,
+      puzzleState,
+      summitState,
+      puzzleSpec,
+      aarSpec,
       flumeSpec,
       hcState,
       hcRegion,
@@ -2625,6 +3734,31 @@ export async function boot(root = document) {
       openFlume,
       openInterpret,
       openClearance,
+      openSystems,
+      openAar,
+      submitAar: submitAarCase,
+      openSummit,
+      askSummit,
+      closeSummit,
+      get summitDebug() {
+        return summitState.lastDebug || null;
+      },
+      summitAdapterId: summitAdapter.id,
+      fieldTest: fieldTestMode
+        ? {
+            session: () => fieldTestSession,
+            payload: fieldTestPayload,
+            mark(mark, note) {
+              const turns = fieldTestSession?.events.filter((row) => row.type === "summit") || [];
+              const last = turns[turns.length - 1];
+              if (!last) return null;
+              return markTurn(fieldTestSession, last.id, mark, note);
+            },
+            exportJson: () => downloadFieldTest("json"),
+            exportMd: () => downloadFieldTest("md")
+          }
+        : null,
+      openConflict,
       releaseWater,
       tryInterpret,
       tryClearance,

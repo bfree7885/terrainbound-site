@@ -1,10 +1,10 @@
 /**
  * Local field journal. Browser storage only — no accounts, no network.
- * v1–v4 saves migrate to v5 (Sunfall Desert celestial session).
+ * v1–v5 saves migrate to v6 (puzzles / AAR). Summit tutor memory is a v6 field.
  */
 
 export const SAVE_KEY = "terrainbound.cedar-hollow.v1";
-export const SAVE_VERSION = 5;
+export const SAVE_VERSION = 6;
 
 export function emptyPresentationSave() {
   return {
@@ -52,7 +52,8 @@ export function emptyFlumeSave() {
     lastHint: "",
     lastSeconds: null,
     unfairAttempted: false,
-    setupRevised: false
+    setupRevised: false,
+    prediction: null
   };
 }
 
@@ -75,13 +76,13 @@ export function emptySunfallSave() {
     seasonExplain: null,
     distanceConfronted: false,
     orbit: { a: 1, e: 0.05, nuDeg: 20, measured: false, eccentricCompared: false },
-    kepler: { a: 4, predictedP: null, checked: false, ok: false },
+    kepler: { a: 4, predictedP: null, checked: false, ok: false, modelChecked: false },
     moonLog: [],
     moonGeometry: false,
     moonPredict: null,
     moonPredictOk: false,
-    eclipse: { aligned: false, tiltOn: true, understood: false },
-    tides: { compared: false, pattern: null },
+    eclipse: { aligned: false, tiltOn: true, understood: false, seenHit: false, seenMiss: false },
+    tides: { compared: false, pattern: null, predict: null },
     planets: { classified: false, pattern: null },
     challenge: {
       site: null,
@@ -98,7 +99,9 @@ export function emptySunfallSave() {
     foundIds: [],
     notes: [],
     lastHint: "",
-    compareSampleSeen: false
+    compareSampleSeen: false,
+    pendingMoon: null,
+    visitedSite: null
   };
 }
 
@@ -140,7 +143,52 @@ export function emptyHighCountrySave() {
     challengePresented: false,
     foundIds: [],
     notes: [],
-    lastHint: ""
+    lastHint: "",
+    scaleEstimates: [],
+    cacheFound: false,
+    slopePredict: null,
+    terrainChoices: {}
+  };
+}
+
+export function emptySummitSave() {
+  return {
+    byPuzzle: {},
+    conceptsExplained: [],
+    misconceptionsAddressed: [],
+    idea: false,
+    ideaSeen: false,
+    turns: 0,
+    struggle: { puzzleId: "", fails: 0, lastKind: "" },
+    recent: [],
+    lastIntent: "",
+    lastLevel: 0
+  };
+}
+
+function snapshotSummit(state) {
+  const empty = emptySummitSave();
+  if (!state) return empty;
+  return {
+    byPuzzle: { ...(state.byPuzzle || {}) },
+    conceptsExplained: [...(state.conceptsExplained || [])],
+    misconceptionsAddressed: [...(state.misconceptionsAddressed || [])],
+    idea: Boolean(state.idea),
+    ideaSeen: Boolean(state.ideaSeen),
+    turns: state.turns || 0,
+    struggle: { ...empty.struggle, ...(state.struggle || {}) },
+    recent: [...(state.recent || [])].slice(-8),
+    lastIntent: state.lastIntent || "",
+    lastLevel: state.lastLevel || 0
+  };
+}
+
+export function emptyPuzzleSave() {
+  return {
+    siteReads: {},
+    systems: { roles: {}, predict: null, concluded: false, active: false },
+    conflict: { seen: false, repaired: false, seed: "crate-marsh" },
+    aar: { itemIds: [], answers: {}, result: null, attempts: 0, remediation: [], lastJudge: null }
   };
 }
 
@@ -156,7 +204,26 @@ export function emptyChallengeSave() {
     presented: false,
     revised: false,
     followUpDone: false,
-    workingRoles: []
+    workingRoles: [],
+    conflicted: false,
+    pulsePredict: null
+  };
+}
+
+function snapshotPuzzles(state) {
+  const empty = emptyPuzzleSave();
+  if (!state) return empty;
+  return {
+    siteReads: { ...(state.siteReads || {}) },
+    systems: { ...empty.systems, ...(state.systems || {}), roles: { ...(state.systems?.roles || {}) } },
+    conflict: { ...empty.conflict, ...(state.conflict || {}) },
+    aar: {
+      ...empty.aar,
+      ...(state.aar || {}),
+      answers: { ...(state.aar?.answers || {}) },
+      remediation: [...(state.aar?.remediation || [])],
+      lastJudge: state.aar?.lastJudge || null
+    }
   };
 }
 
@@ -199,13 +266,20 @@ function snapshotHighCountry(state) {
     challengeReasons: [...(state.challengeReasons || [])],
     foundIds: [...(state.foundIds || [])],
     notes: [...(state.notes || [])],
+    scaleEstimates: [...(state.scaleEstimates || [])],
     mapState: { ...empty.mapState, ...(state.mapState || {}) }
   };
 }
 
 export function migrateSave(data) {
   if (!data || typeof data !== "object") return null;
-  if (data.v === 5) {
+  if (data.v === 6) {
+    const puzzles = snapshotPuzzles(data.puzzles);
+    if (data.world?.masteredRegions?.includes("cedar-hollow") && !puzzles.aar.result) {
+      puzzles.aar.result = "clearance";
+      puzzles.systems.concluded = true;
+      puzzles.conflict.repaired = true;
+    }
     return {
       ...data,
       taught: { ...emptyTaught(), ...(data.taught || {}) },
@@ -215,11 +289,26 @@ export function migrateSave(data) {
       flume: { ...emptyFlumeSave(), ...(data.flume || {}) },
       fieldData: { ...emptyDataSave(), ...(data.fieldData || {}) },
       challenge: { ...emptyChallengeSave(), ...(data.challenge || {}) },
+      puzzles,
+      summit: snapshotSummit(data.summit),
       highCountry: snapshotHighCountry(data.highCountry),
       sunfall: snapshotSunfall(data.sunfall),
       regionPlayers: { ...emptyRegionPlayers(), ...(data.regionPlayers || {}) },
       presentation: { ...emptyPresentationSave(), ...(data.presentation || {}) }
     };
+  }
+  if (data.v === 5) {
+    const puzzles = emptyPuzzleSave();
+    if (data.world?.masteredRegions?.includes("cedar-hollow") || data.challenge?.presented) {
+      puzzles.aar.result = "clearance";
+      puzzles.systems.concluded = true;
+      puzzles.conflict.repaired = true;
+    }
+    return migrateSave({
+      ...data,
+      v: 6,
+      puzzles
+    });
   }
   if (data.v === 4) {
     return migrateSave({
@@ -278,6 +367,8 @@ export function captureSave({
   flumeState,
   dataState,
   challengeState,
+  puzzleState,
+  summitState,
   hcState,
   sfState,
   regionPlayers,
@@ -303,6 +394,8 @@ export function captureSave({
       activeId: dataState?.activeId || null
     },
     challenge: { ...emptyChallengeSave(), ...(challengeState || {}) },
+    puzzles: snapshotPuzzles(puzzleState),
+    summit: snapshotSummit(summitState),
     highCountry: snapshotHighCountry(hcState),
     sunfall: snapshotSunfall(sfState),
     regionPlayers: {
@@ -334,7 +427,8 @@ export function captureSave({
       lastHint: invState.lastHint,
       concluded: invState.concluded,
       interpreted: invState.interpreted,
-      attempts: invState.attempts
+      attempts: invState.attempts,
+      obsInt: { sorts: [...(invState.obsInt?.sorts || [])] }
     }
   };
 }
@@ -353,6 +447,8 @@ export function applySave(
     flumeState,
     dataState,
     challengeState,
+    puzzleState,
+    summitState,
     hcState,
     sfState,
     regionPlayers,
@@ -369,7 +465,11 @@ export function applySave(
   if (migrated.taught) Object.assign(taught, emptyTaught(), migrated.taught);
   if (migrated.mission) Object.assign(missionState, migrated.mission);
   if (migrated.discoveries) Object.assign(discoveryState, migrated.discoveries);
-  if (migrated.investigation) Object.assign(invState, migrated.investigation);
+  if (migrated.investigation) {
+    Object.assign(invState, migrated.investigation);
+    if (!invState.obsInt) invState.obsInt = { sorts: [] };
+    if (!Array.isArray(invState.obsInt.sorts)) invState.obsInt.sorts = [];
+  }
   if (worldState && migrated.world) {
     worldState.currentRegion = migrated.world.currentRegion;
     worldState.accessibleRegions = [...migrated.world.accessibleRegions];
@@ -388,6 +488,26 @@ export function applySave(
   }
   if (challengeState && migrated.challenge) {
     Object.assign(challengeState, emptyChallengeSave(), migrated.challenge);
+  }
+  if (puzzleState && migrated.puzzles) {
+    const snap = snapshotPuzzles(migrated.puzzles);
+    puzzleState.siteReads = snap.siteReads;
+    puzzleState.systems = snap.systems;
+    puzzleState.conflict = snap.conflict;
+    puzzleState.aar = snap.aar;
+  }
+  if (summitState && migrated.summit) {
+    const snap = snapshotSummit(migrated.summit);
+    summitState.byPuzzle = snap.byPuzzle;
+    summitState.conceptsExplained = snap.conceptsExplained;
+    summitState.misconceptionsAddressed = snap.misconceptionsAddressed;
+    summitState.idea = snap.idea;
+    summitState.ideaSeen = snap.ideaSeen;
+    summitState.turns = snap.turns;
+    summitState.struggle = snap.struggle;
+    summitState.recent = snap.recent;
+    summitState.lastIntent = snap.lastIntent;
+    summitState.lastLevel = snap.lastLevel;
   }
   if (hcState && migrated.highCountry) {
     const snap = snapshotHighCountry(migrated.highCountry);

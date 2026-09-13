@@ -6,6 +6,7 @@ import { drawFieldSketch } from "./investigation.js";
 import { drawDatasetGraph } from "./fielddata.js";
 import { drawFieldMap, drawProfileChart } from "./geomap.js";
 import { drawOrbitModel, drawMoonGeometry, drawEclipseGeometry } from "./celestial.js";
+import { drawSystemsSketch } from "./puzzles.js";
 
 const SYMBOLS = {
   erratic: "◉",
@@ -25,7 +26,11 @@ const SYMBOLS = {
 const KIND_LABEL = {
   observation: "Observation",
   comparison: "Comparison",
-  measurement: "Measurement"
+  measurement: "Measurement",
+  pattern: "Pattern",
+  "system-relationship": "System relationship",
+  "revised-explanation": "Revised explanation",
+  "map-evidence": "Map evidence"
 };
 
 export function bindUi(root) {
@@ -95,6 +100,12 @@ export function bindUi(root) {
   const skyClockJumps = root.querySelector("#sky-clock-jumps");
   const skyClockExtra = root.querySelector("#sky-clock-extra");
   const skyClockFull = root.querySelector("#sky-clock-full");
+  const guide = root.querySelector("#field-guide");
+  const guideQuestion = root.querySelector("#guide-question");
+  const guideVerb = root.querySelector("#guide-verb");
+  const guideNext = root.querySelector("#guide-next");
+  const guideWhere = root.querySelector("#guide-where");
+  const guidePairs = root.querySelector("#guide-pairs");
   const dataCaption = root.querySelector("#data-caption");
   const dataTable = root.querySelector("#journal-data-table");
   const journalGraph = root.querySelector("#journal-graph");
@@ -120,6 +131,27 @@ export function bindUi(root) {
   const clearanceStatus = root.querySelector("#clearance-status");
   const clearanceTry = root.querySelector("#clearance-try");
   const clearanceFollowTry = root.querySelector("#clearance-follow-try");
+  const systemsMap = root.querySelector("#systems-map");
+  const systemsLead = root.querySelector("#systems-lead");
+  const systemsSketch = root.querySelector("#systems-sketch");
+  const systemsPrompt = root.querySelector("#systems-prompt");
+  const systemsStatus = root.querySelector("#systems-status");
+  const systemsTry = root.querySelector("#systems-try");
+  const aar = root.querySelector("#aar");
+  const aarTitle = root.querySelector("#aar-title");
+  const aarLead = root.querySelector("#aar-lead");
+  const aarStem = root.querySelector("#aar-stem");
+  const aarEvidence = root.querySelector("#aar-evidence");
+  const aarEvidenceKicker = root.querySelector("#aar-evidence-kicker");
+  const aarStatus = root.querySelector("#aar-status");
+  const aarNext = root.querySelector("#aar-next");
+  const aarSubmit = root.querySelector("#aar-submit");
+  const summit = root.querySelector("#summit");
+  const summitLog = root.querySelector("#summit-log");
+  const summitLead = root.querySelector("#summit-lead");
+  const summitMore = root.querySelector("#summit-more");
+  const summitToggle = root.querySelector("#summit-toggle");
+  const summitAsk = root.querySelector("#summit-ask");
   const tabButtons = [...root.querySelectorAll(".journal-tabs [data-tab]")];
   const panels = [...root.querySelectorAll("[data-panel]")];
 
@@ -152,6 +184,33 @@ export function bindUi(root) {
       if (placeName) placeName.textContent = name;
       if (placeSub) placeSub.textContent = sub;
       if (journalTitle) journalTitle.textContent = name;
+    },
+    setGuide(model, visible = true) {
+      if (!guide) return;
+      if (!visible || !model) {
+        guide.hidden = true;
+        return;
+      }
+      guide.hidden = false;
+      if (guideQuestion) guideQuestion.textContent = model.question || "";
+      if (guideVerb) guideVerb.textContent = model.verb || "";
+      if (guideNext) guideNext.textContent = model.next || "";
+      if (guideWhere) {
+        const bits = [model.where, model.lookingFor].filter(Boolean);
+        guideWhere.textContent = bits.join(" · ");
+      }
+      if (guidePairs) {
+        const pairs = (model.pairs || []).filter((pair) => !pair.compared);
+        guidePairs.hidden = !pairs.length;
+        guidePairs.replaceChildren();
+        for (const pair of pairs) {
+          const li = document.createElement("li");
+          const left = pair.left.have ? "recorded" : "needed";
+          const right = pair.right.have ? "recorded" : "needed";
+          li.textContent = `${pair.left.label}: ${left}  ·  ${pair.right.label}: ${right}`;
+          guidePairs.appendChild(li);
+        }
+      }
     },
     setEnterLabel(hasSave) {
       if (enterBtn) {
@@ -249,6 +308,14 @@ export function bindUi(root) {
         empty.textContent = view.emptyNotes || "No mission notes yet. Walk the hollow and inspect what you find.";
         missionBody.appendChild(empty);
       }
+      if (view.guide) {
+        missionBody.prepend(
+          noteArticle(
+            `${view.guide.verb} · ${view.guide.question}`,
+            `${view.guide.next}${view.guide.where ? " (" + view.guide.where + ")" : ""}`
+          )
+        );
+      }
       for (const item of observations) {
         missionBody.appendChild(noteArticle(item.title, item.text));
       }
@@ -309,7 +376,10 @@ export function bindUi(root) {
       }
 
       const evidence = view.evidence;
-      const showEvidence = view.landscapeActive || (evidence && evidence.cards.length);
+      const showEvidence =
+        view.landscapeActive ||
+        Boolean(evidence && evidence.cards.length) ||
+        Boolean(view.puzzleEvidence && view.puzzleEvidence.length);
       const showData = Boolean(view.dataRows && view.dataRows.length);
       const showMap = Boolean(view.showMap);
       if (evidenceTab) evidenceTab.disabled = !showEvidence;
@@ -325,10 +395,14 @@ export function bindUi(root) {
       if (dataSection) dataSection.hidden = journalTab !== "data" || !showData;
       if (mapSection) mapSection.hidden = journalTab !== "map" || !showMap;
       if (showEvidence && evidence) {
-        evidenceCount.textContent = evidence.cards.length
-          ? `${evidence.cards.length} field notes`
-          : "Compare what doesn't fit. Notes appear after you measure.";
-        if (!evidence.cards.length) {
+        if (evidence.cards.length) {
+          evidenceCount.textContent = `${evidence.cards.length} field notes`;
+        } else if (view.puzzleEvidence?.length) {
+          evidenceCount.textContent = "Notes from the investigation. Pin these when Wren asks.";
+        } else {
+          evidenceCount.textContent = "Compare what doesn't fit. Notes appear after you measure.";
+        }
+        if (!evidence.cards.length && !view.puzzleEvidence?.length) {
           const empty = document.createElement("p");
           empty.className = "journal-empty";
           empty.textContent = "No evidence cards yet. Inspect more closely at the boulder, the knob, the creek bend, and the high ledge.";
@@ -350,8 +424,26 @@ export function bindUi(root) {
         drawFieldSketch(ctx, sketchCanvas.width, sketchCanvas.height, view.investigation, view.sketch);
         if (sketchCaption) {
           sketchCaption.textContent = view.landscapeConcluded
-            ? "Inferred ice-flow added after the explanation held."
+            ? "Older landscape notes added after the explanation held."
             : "A field drawing of Cedar Hollow — not a trail map.";
+        }
+      }
+      if (showEvidence && view.puzzleEvidence?.length) {
+        const kicker = document.createElement("p");
+        kicker.className = "journal-kicker";
+        kicker.textContent = "Case notes";
+        evidenceBody.appendChild(kicker);
+        for (const row of view.puzzleEvidence) {
+          const article = document.createElement("article");
+          const kind = document.createElement("p");
+          kind.className = "chip-scale";
+          kind.textContent = KIND_LABEL[row.category] || "Evidence";
+          const title = document.createElement("h4");
+          title.textContent = row.title;
+          const note = document.createElement("p");
+          note.textContent = row.note;
+          article.append(kind, title, note);
+          evidenceBody.appendChild(article);
         }
       }
 
@@ -359,7 +451,7 @@ export function bindUi(root) {
         hypothesisOpen.hidden = !view.canPropose && !view.landscapeConcluded;
         hypothesisOpen.textContent = view.landscapeConcluded
           ? "Review the explanation"
-          : "What shaped this hollow?";
+          : "Two clocks in the hollow";
       }
 
       if (fieldRecord) {
@@ -520,6 +612,12 @@ export function bindUi(root) {
       if (!open) return;
       fillChips(flumeSlopes, view.slopes, view.slope, handlers.onSlope);
       fillChips(flumeWater, view.waters, view.water, handlers.onWater);
+      if (view.predictOptions) {
+        const pred = root.querySelector("#flume-predict") || flumeSlopes;
+        if (root.querySelector("#flume-predict")) {
+          fillChips(root.querySelector("#flume-predict"), view.predictOptions, view.prediction, handlers.onPredict);
+        }
+      }
       if (flumeStatus) flumeStatus.textContent = view.status || "";
       if (flumeLog) {
         flumeLog.replaceChildren();
@@ -553,19 +651,148 @@ export function bindUi(root) {
       clearance.hidden = !open;
       if (!open) return;
       if (clearanceProgress) clearanceProgress.textContent = view.progress || "";
-      fillChips(clearanceExplanations, view.explanations, view.selectedExplanation, handlers.onExplanation);
+      const pulse = Boolean(view.needsPulse);
+      if (clearanceExplanations) clearanceExplanations.hidden = pulse;
       const follow = Boolean(view.needsFollowUp);
-      if (clearanceFollowKicker) clearanceFollowKicker.hidden = !follow;
-      if (clearanceFollow) {
-        clearanceFollow.hidden = !follow;
-        if (follow) fillChips(clearanceFollow, view.followOptions, view.followId, handlers.onFollow);
+      if (clearanceFollowKicker) {
+        clearanceFollowKicker.hidden = !(follow || pulse);
+        if (pulse) clearanceFollowKicker.textContent = view.pulsePrompt || "Predict first";
+        else if (follow) clearanceFollowKicker.textContent = "One more check";
       }
-      if (clearanceTry) clearanceTry.hidden = follow || view.concluded;
+      if (clearanceFollow) {
+        clearanceFollow.hidden = !(follow || pulse);
+        if (pulse) fillChips(clearanceFollow, view.pulseOptions, view.pulseId, handlers.onPulse);
+        else if (follow) fillChips(clearanceFollow, view.followOptions, view.followId, handlers.onFollow);
+      }
+      if (!pulse) fillChips(clearanceExplanations, view.explanations, view.selectedExplanation, handlers.onExplanation);
+      if (clearanceTry) {
+        clearanceTry.hidden = follow || view.concluded;
+        clearanceTry.textContent = pulse ? "Record prediction" : "Try this explanation";
+      }
       if (clearanceFollowTry) clearanceFollowTry.hidden = !follow || view.concluded;
       if (clearanceStatus) {
         clearanceStatus.textContent = view.status || "";
         clearanceStatus.classList.toggle("is-success", Boolean(view.concluded));
       }
+    },
+    showSystems(open, view = {}, handlers = {}) {
+      if (!systemsMap) return;
+      systemsMap.hidden = !open;
+      if (!open) return;
+      if (systemsLead) systemsLead.textContent = view.lead || "";
+      if (systemsPrompt) systemsPrompt.textContent = view.prompt || "";
+      if (systemsSketch && view.spec) {
+        const ctx = systemsSketch.getContext("2d");
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const w = Math.max(280, Math.floor(systemsSketch.clientWidth || 560));
+        const h = Math.max(180, Math.floor(w * 0.58));
+        systemsSketch.width = Math.floor(w * dpr);
+        systemsSketch.height = Math.floor(h * dpr);
+        systemsSketch.style.width = `${w}px`;
+        systemsSketch.style.height = `${h}px`;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        drawSystemsSketch(ctx, w, h, view.spec, view.state);
+        systemsSketch.onpointerdown = (event) => {
+          if (event.button != null && event.button !== 0) return;
+          event.preventDefault();
+          const rect = systemsSketch.getBoundingClientRect();
+          handlers.onTap?.(event.clientX - rect.left, event.clientY - rect.top, w, h);
+        };
+        systemsSketch.onclick = null;
+      }
+      if (systemsStatus) {
+        systemsStatus.textContent = view.status || "";
+        systemsStatus.classList.toggle("is-success", Boolean(view.concluded || view.ready));
+      }
+      if (systemsTry) systemsTry.hidden = !view.ready || Boolean(view.concluded);
+    },
+    showAar(open, view = {}, handlers = {}) {
+      if (!aar) return;
+      aar.hidden = !open;
+      if (!open) return;
+      if (aarTitle) aarTitle.textContent = view.title || "Make the case";
+      if (aarLead) aarLead.textContent = view.lead || "";
+      if (aarStem) aarStem.textContent = view.stem || "";
+      if (aarEvidenceKicker) aarEvidenceKicker.hidden = Boolean(view.result);
+      if (aarEvidence) {
+        aarEvidence.hidden = Boolean(view.result);
+        aarEvidence.replaceChildren();
+        const selected = new Set(view.selected || []);
+        for (const row of view.evidence || []) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "aar-card-btn";
+          btn.classList.toggle("is-on", selected.has(row.id));
+          btn.setAttribute("aria-pressed", selected.has(row.id) ? "true" : "false");
+          const kind = document.createElement("span");
+          kind.className = "chip-scale";
+          kind.textContent = KIND_LABEL[row.category] || "Evidence";
+          const title = document.createElement("strong");
+          title.textContent = row.title;
+          const note = document.createElement("span");
+          note.textContent = row.note;
+          btn.append(kind, title, note);
+          btn.addEventListener("click", () => handlers.onToggle?.(row.id));
+          aarEvidence.appendChild(btn);
+        }
+      }
+      if (aarStatus) {
+        aarStatus.textContent = view.status || "";
+        aarStatus.classList.toggle("is-success", view.result === "clearance");
+      }
+      if (aarNext) aarNext.hidden = Boolean(view.done || view.result);
+      if (aarSubmit) aarSubmit.hidden = !view.done || Boolean(view.result);
+    },
+    setSummitIdea(on) {
+      summitToggle?.classList.toggle("has-idea", Boolean(on));
+    },
+    showSummit(open, view = {}) {
+      if (!summit) return;
+      summit.hidden = !open;
+      if (summitToggle) summitToggle.setAttribute("aria-expanded", open ? "true" : "false");
+      if (!open) return;
+      if (summitLead) {
+        summitLead.textContent = view.lead || "Curious about the hollow. Serious about the science.";
+        summitLead.classList.toggle("is-pending", Boolean(view.pending));
+      }
+      const portrait = root.querySelector("#summit-portrait");
+      if (portrait) {
+        const src = view.portraitSrc || "./assets/summit/summit-neutral.svg";
+        if (portrait.getAttribute("src") !== src) portrait.setAttribute("src", src);
+        portrait.dataset.expression = view.expression || "neutral";
+        portrait.alt = "Summit, a Sasquatch Earth Science companion";
+      }
+      if (summit) summit.setAttribute("aria-busy", view.pending ? "true" : "false");
+      if (summitLog) {
+        summitLog.replaceChildren();
+        for (const row of view.messages || []) {
+          const p = document.createElement("p");
+          p.className = `summit-msg ${row.role === "student" ? "is-student" : "is-summit"}`;
+          const cite = document.createElement("cite");
+          cite.textContent = row.role === "student" ? "You" : "Summit";
+          const body = document.createElement("span");
+          body.textContent = row.text;
+          p.append(cite, body);
+          summitLog.appendChild(p);
+        }
+        summitLog.scrollTop = (view.messages || []).length <= 2 ? 0 : summitLog.scrollHeight;
+      }
+      if (summitMore) summitMore.hidden = !view.moreAvailable;
+      if (summitAsk) summitAsk.disabled = Boolean(view.pending);
+      const diag = root.querySelector("#summit-diag");
+      if (diag) {
+        diag.hidden = !view.diag;
+        diag.setAttribute("aria-hidden", view.diag ? "false" : "true");
+        diag.textContent = view.diag || "";
+      }
+      const ft = root.querySelector("#summit-fieldtest");
+      const ftFlag = root.querySelector("#summit-fieldtest-flag");
+      if (ftFlag) ftFlag.hidden = !view.fieldTest;
+      if (ft) {
+        ft.hidden = !view.fieldTest;
+        ft.dataset.turnId = view.fieldTestTurnId || "";
+      }
+      if (open && !view.pending) summitAsk?.focus();
     },
     showGeoBoard(open, view = {}, handlers = {}) {
       if (!geoBoard) return;
@@ -605,6 +832,38 @@ export function bindUi(root) {
         }
         if (view.table) {
           geoBody.appendChild(buildGenericTable(view.table.columns, view.table.rows));
+        }
+        if (view.numberInput) {
+          const kicker = document.createElement("p");
+          kicker.className = "hypothesis-kicker";
+          kicker.textContent = view.numberInput.label || "Value";
+          geoBody.appendChild(kicker);
+          const input = document.createElement("input");
+          input.type = "number";
+          input.step = "any";
+          input.id = "geo-number";
+          input.setAttribute("aria-label", view.numberInput.label || "Value");
+          input.value = view.numberInput.value == null ? "" : String(view.numberInput.value);
+          input.addEventListener("input", () => handlers.onNumber?.(view.numberInput.id, input.value));
+          geoBody.appendChild(input);
+        }
+        if (view.obsInt) {
+          const kicker = document.createElement("p");
+          kicker.className = "hypothesis-kicker";
+          kicker.textContent = view.obsInt.prompt;
+          geoBody.appendChild(kicker);
+          const row = document.createElement("div");
+          row.className = "chip-row";
+          geoBody.appendChild(row);
+          fillChips(
+            row,
+            [
+              { id: "observation", label: view.obsInt.observation },
+              { id: "interpretation", label: view.obsInt.interpretation }
+            ],
+            view.obsInt.selected,
+            (id) => handlers.onPick?.("choice", id)
+          );
         }
         if (view.groups) {
           for (const group of view.groups) {
@@ -740,10 +999,13 @@ function evidenceArticle(card) {
   kind.textContent = KIND_LABEL[card.kind] || "Observation";
   const obs = document.createElement("p");
   obs.textContent = card.observation;
-  const sig = document.createElement("p");
-  sig.className = "evidence-sig";
-  sig.textContent = card.significance;
-  art.append(h, kind, obs, sig);
+  art.append(h, kind, obs);
+  if (card.interpreted && card.significance) {
+    const sig = document.createElement("p");
+    sig.className = "evidence-sig";
+    sig.textContent = card.significance;
+    art.appendChild(sig);
+  }
   if (card.question) {
     const q = document.createElement("p");
     q.className = "evidence-q";
